@@ -28,7 +28,7 @@ En Windows PowerShell, la activación es:
 Ejecutar las verificaciones:
 
 ```bash
-pytest
+python -m pytest
 flake8 app tests
 ```
 
