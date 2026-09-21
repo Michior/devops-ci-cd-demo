@@ -6,9 +6,19 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: Tests - Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
     steps:
       - name: Descargar el código
         uses: actions/checkout@v7
@@ -16,16 +26,47 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Restaurar caché de pip
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
 
       - name: Instalar dependencias
         run: python -m pip install -r requirements-dev.txt
 
       - name: Ejecutar pruebas
-        run: python -m pytest
+        run: python -m pytest --junitxml=test-results-${{ matrix.python-version }}.xml
+
+      - name: Publicar resultados
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: test-results-${{ matrix.python-version }}.xml
+          retention-days: 7
+
+  collect-results:
+    name: Recopilar resultados
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar reportes
+        uses: actions/download-artifact@v8
+        with:
+          pattern: test-results-*
+          path: test-results
+          merge-multiple: true
+
+      - name: Mostrar archivos recuperados
+        run: find test-results -maxdepth 1 -type f -print
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
+
     steps:
       - name: Descargar el código
         uses: actions/checkout@v7
@@ -42,10 +83,98 @@ jobs:
         run: flake8 app tests
 
   build:
+    name: Build
     runs-on: ubuntu-latest
+
     steps:
       - name: Descargar el código
         uses: actions/checkout@v7
 
       - name: Construir imagen
         run: docker build --tag devops-ci-cd-demo:${{ github.sha }} .
+
+      - name: Exportar imagen
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker image save \
+            --output devops-ci-cd-demo.tar \
+            devops-ci-cd-demo:${{ github.sha }}
+
+      - name: Publicar imagen
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-image-${{ github.sha }}
+          path: devops-ci-cd-demo.tar
+          retention-days: 7
+
+  promote_staging:
+    name: Promover a staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [collect-results, lint, build]
+    runs-on: ubuntu-latest
+    environment: staging
+
+    outputs:
+      image-sha256: ${{ steps.identity.outputs.sha256 }}
+
+    steps:
+      - name: Descargar imagen construida
+        uses: actions/download-artifact@v8
+        with:
+          name: container-image-${{ github.sha }}
+          path: release
+
+      - name: Calcular identidad del archivo
+        id: identity
+        run: |
+          SHA256=$(sha256sum release/devops-ci-cd-demo.tar | awk '{print $1}')
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "SHA-256 del artefacto: $SHA256"
+
+      - name: Cargar imagen
+        run: docker image load --input release/devops-ci-cd-demo.tar
+
+      - name: Verificar imagen
+        run: docker image inspect devops-ci-cd-demo:${{ github.sha }} > /dev/null
+
+      - name: Simular promoción
+        run: |
+          echo "El artefacto está preparado para desplegarse en staging."
+          echo "La infraestructura real se incorpora en una sesión posterior."
+  
+  promote_production:
+    name: Promover a producción
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: promote_staging
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Descargar la misma imagen
+        uses: actions/download-artifact@v8
+        with:
+          name: container-image-${{ github.sha }}
+          path: release
+
+      - name: Verificar identidad del archivo
+        env:
+          STAGING_SHA256: ${{ needs.promote_staging.outputs.image-sha256 }}
+        run: |
+          PRODUCTION_SHA256=$(sha256sum release/devops-ci-cd-demo.tar | awk '{print $1}')
+
+          echo "SHA-256 observado en staging:    $STAGING_SHA256"
+          echo "SHA-256 observado en producción: $PRODUCTION_SHA256"
+
+          test "$PRODUCTION_SHA256" = "$STAGING_SHA256"
+
+      - name: Cargar imagen
+        run: docker image load --input release/devops-ci-cd-demo.tar
+
+      - name: Verificar imagen
+        run: docker image inspect devops-ci-cd-demo:${{ github.sha }} > /dev/null
+
+      - name: Simular promoción
+        run: |
+          echo "El mismo artefacto está preparado para desplegarse en producción."
+          echo "La infraestructura real se incorpora en una sesión posterior."
