@@ -6,7 +6,7 @@ def calculate_total(unit_price: float, quantity: int) -> float:
         raise ValueError("quantity must be greater than zero")
 
     subtotal = unit_price * quantity
-    if quantity > 10:
+    if quantity >= 10:
         subtotal *= 0.90
 
     return round(subtotal, 2)
