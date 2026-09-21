@@ -6,9 +6,19 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: Tests - Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
     steps:
       - name: Descargar el código
         uses: actions/checkout@v7
@@ -16,16 +26,47 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Restaurar caché de pip
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
 
       - name: Instalar dependencias
         run: python -m pip install -r requirements-dev.txt
 
       - name: Ejecutar pruebas
-        run: python -m pytest
+        run: python -m pytest --junitxml=test-results-${{ matrix.python-version }}.xml
+
+      - name: Publicar resultados
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: test-results-${{ matrix.python-version }}.xml
+          retention-days: 7
+
+  collect-results:
+    name: Recopilar resultados
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar reportes
+        uses: actions/download-artifact@v8
+        with:
+          pattern: test-results-*
+          path: test-results
+          merge-multiple: true
+
+      - name: Mostrar archivos recuperados
+        run: find test-results -maxdepth 1 -type f -print
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
+
     steps:
       - name: Descargar el código
         uses: actions/checkout@v7
@@ -42,7 +83,9 @@ jobs:
         run: flake8 app tests
 
   build:
+    name: Build
     runs-on: ubuntu-latest
+
     steps:
       - name: Descargar el código
         uses: actions/checkout@v7
